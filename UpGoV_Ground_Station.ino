@@ -19,6 +19,9 @@
 #include<Adafruit_GFX.h>    // Graphics library for OLED display
 #include<Adafruit_SH110X.h> // OLED display driver library
 #include<RH_RF95.h>         // LoRa Radio driver library
+#include<RHReliableDatagram.h>  // Radio manager class library
+
+#define DEBUG
 
 // Constants
 const uint8_t OLED_A_ADDR = 0x3C;
@@ -33,6 +36,8 @@ const double RADIO_FREQ = 915.0;
 const String VERSION = "Beta 1.0";
 const uint8_t RADIO_POWER = 23;
 const uint8_t MAX_MESSAGE_LENGTH = 20;
+const uint8_t GROUND_STATION_ADDR = 1;
+const uint8_t UPGOV_ADDR = 2;
 
 enum oledDataType {STATUS, ALTITUDE, ACCELERATION, DURATION, BATTERY1, BATTERY2};
 enum states {START_UP, FAULT, READY, ARMED, LOGGING, POST_FLIGHT, ERROR};
@@ -42,18 +47,22 @@ enum battery {FULL, OK, LOWBAT, CRITICAL};
 Adafruit_SH1107 displayA = Adafruit_SH1107(64, 128, &Wire);
 Adafruit_SH1107 displayB = Adafruit_SH1107(64, 128, &Wire);
 RH_RF95 radioDriver = RH_RF95(RADIO_CS, RADIO_INT);
+RHReliableDatagram radioManager = RHReliableDatagram(radioDriver, GROUND_STATION_ADDR);
 
 bool armed = false;
 
 char buffer[MAX_MESSAGE_LENGTH]; // Message buffer
 char radioPacket[20];
+int radioError = 0;
 
 
 void setup() {
   Serial.begin(115200);
+#ifdef DEBUG
   while(!Serial) {
     ;
   }
+#endif
 
   Serial.print("UpGoV Ground Station Version ");
   Serial.println(VERSION);
@@ -82,6 +91,7 @@ void setup() {
     radioFreqSetError = !radioDriver.setFrequency(RADIO_FREQ);
     radioDriver.setTxPower(RADIO_POWER, false);
   }
+  radioManager.setThisAddress(GROUND_STATION_ADDR);
   
 
   // Wait for user to press button A
@@ -138,30 +148,27 @@ void setup() {
 
   bool connected = false;
   strncpy(radioPacket, "connect", sizeof(radioPacket));
+  uint8_t from;
+  uint8_t messageLength;
   while (!connected) {
     Serial.print("Sending: ");
     Serial.println(radioPacket);
-    radioDriver.send((uint8_t *)radioPacket, sizeof(radioPacket));
-    delay(10);
-
-    // Block here until the packet has been sent by the transmitter
-    radioDriver.waitPacketSent();
-    Serial.println("Radio packet sent");
-
-    // Now check for receipt of a "connect" message
-    if (radioDriver.waitAvailableTimeout(1000)) {    // Check for a message for 1 second
-      // There should be a message for us
-      Serial.println("Message available");
-      uint8_t length;
-      if (radioDriver.recv((uint8_t *)buffer, &length)) {   // Get the message
-        // Check the length
-        if (length != 0) {
-          Serial.println("Message length OK");
-          if (!strncmp(buffer, "connect", 7)) {   // Is it the "connect" message
-            // It is!!
-            Serial.println("Received connect message");
+    messageLength = sizeof(buffer);
+    if (radioManager.sendtoWait((uint8_t *)radioPacket, sizeof(radioPacket), UPGOV_ADDR)) {
+      // An ack was received. Wait for a "connect" reply message
+      Serial.println("An ack was received");
+      if (radioManager.recvfromAckTimeout((uint8_t*)buffer, &messageLength, 2000, &from)) {
+        // Received a reply. Is it from the UpGoV package?
+        Serial.print("Received a reply message was received from: ");
+        Serial.println(from);
+        if (from == UPGOV_ADDR) {
+          // Its from UpGoV. Is it the connect message?
+          Serial.print("The reply message was: ");
+          Serial.println(buffer);
+          if (!strncmp(buffer, "connect", 7)) {
             connected = true;
             printOledMessage("Connected");
+            Serial.println("Received connect message");
           }
         }
       }
@@ -169,11 +176,8 @@ void setup() {
     
     delay(1000);
   }
-
-
-  //delay(3000);
   
-}
+} // End setup()
 
 void loop() {
   // In the loop we need to periodically do the following:
@@ -197,71 +201,65 @@ void loop() {
   static battery currentBatteryStatus = CRITICAL;
   
   // Check for available radio message from UpGoV
-  if (radioDriver.available()) {
-    // Process, decode, and act on the message here
-    char messageBuffer[RH_RF95_MAX_MESSAGE_LEN];
-    uint8_t messageLength = sizeof(messageBuffer);
-    if (radioDriver.recv((uint8_t *)messageBuffer, &messageLength)) {
-      // Check message length. All valid messages will have length > 3 
-      if (messageLength >= 3) {
-        String message(messageBuffer);
-        Serial.println(message);
-        if (message.startsWith("MS:")) {
-          message.remove(0, 3); // Remove the message prefix
-          printOledMessage(message.c_str());
-        } else if (message.startsWith("ER:")) {
-          message.remove(0, 3);
-          String errorMessage("ERROR: ");
-          errorMessage.concat(message);
-          printOledMessage(errorMessage.c_str());
-        } else if (message.startsWith("ST:")) {
-          message.remove(0, 3);
-          printOledData(STATUS, message.c_str());
-          if (message == "FAULT") {
-            currentState = FAULT;
-            sendRadioMessageNoAck("ST:FAULT");
-          } else if (message == "READY") {
-            currentState = READY;
-            sendRadioMessageNoAck("ST:READY");
-          } else if (message == "ARMED") {
-            currentState = ARMED;
-            sendRadioMessageNoAck("ST:ARMED");
-          } else if (message == "LOGGING") {
-            currentState = LOGGING;
-          } else if (message == "POST_FLIGHT") {
-            currentState = POST_FLIGHT;
-            sendRadioMessageNoAck("ST:POST_FLIGHT");
-          } else {
-            currentState = ERROR;
-          }
-        } else if (message.startsWith("AL:")) {
-          message.remove(0, 3);
-          printOledData(ALTITUDE, message.c_str());
-        } else if (message.startsWith("AC:")) {
-          message.remove(0, 3);
-          printOledData(ACCELERATION, message.c_str());
-        } else if (message.startsWith("DU:")) {
-          message.remove(0, 3);
-          printOledData(DURATION, message.c_str());
-        } else if (message.startsWith("AT:")) {
-          printOledMessage("Lauch again?");
-        } else if (message.startsWith("BT:")) {
-          message.remove(0, 3);
-          printOledData(BATTERY1, message.c_str());
-          if (message == "FULL") {
-            currentBatteryStatus = FULL;
-          } else if (message == "OK") {
-            currentBatteryStatus = OK;
-          } else if (message == "LOW") {
-            currentBatteryStatus = LOWBAT;
-          } else if (message == "CRITICAL") {
-            currentBatteryStatus = CRITICAL;
-          } else {
-            currentBatteryStatus = CRITICAL;
-          }
+  char messageBuffer[RH_RF95_MAX_MESSAGE_LEN];
+  uint8_t messageLength = sizeof(messageBuffer);
+  if (radioManager.recvfromAck((uint8_t*)messageBuffer, &messageLength)) {
+    // Decode, and act on the message here
+    // Check message length. All valid messages will have length > 3 
+    if (messageLength >= 3) {
+      String message(messageBuffer);
+      Serial.println(message);
+      if (message.startsWith("MS:")) {
+        message.remove(0, 3); // Remove the message prefix
+        printOledMessage(message.c_str());
+      } else if (message.startsWith("ER:")) {
+        message.remove(0, 3);
+        String errorMessage("ERROR: ");
+        errorMessage.concat(message);
+        printOledMessage(errorMessage.c_str());
+      } else if (message.startsWith("ST:")) {
+        message.remove(0, 3);
+        printOledData(STATUS, message.c_str());
+        if (message == "FAULT") {
+          currentState = FAULT;
+        } else if (message == "READY") {
+          currentState = READY;
+        } else if (message == "ARMED") {
+          currentState = ARMED;
+        } else if (message == "LOGGING") {
+          currentState = LOGGING;
+        } else if (message == "POST_FLIGHT") {
+          currentState = POST_FLIGHT;
         } else {
-          printOledMessage("Invalid message");
+          currentState = ERROR;
         }
+      } else if (message.startsWith("AL:")) {
+        message.remove(0, 3);
+        printOledData(ALTITUDE, message.c_str());
+      } else if (message.startsWith("AC:")) {
+        message.remove(0, 3);
+        printOledData(ACCELERATION, message.c_str());
+      } else if (message.startsWith("DU:")) {
+        message.remove(0, 3);
+        printOledData(DURATION, message.c_str());
+      } else if (message.startsWith("AT:")) {
+        printOledMessage("Lauch again?");
+      } else if (message.startsWith("BT:")) {
+        message.remove(0, 3);
+        printOledData(BATTERY1, message.c_str());
+        if (message == "FULL") {
+          currentBatteryStatus = FULL;
+        } else if (message == "OK") {
+          currentBatteryStatus = OK;
+        } else if (message == "LOW") {
+          currentBatteryStatus = LOWBAT;
+        } else if (message == "CRITICAL") {
+          currentBatteryStatus = CRITICAL;
+        } else {
+          currentBatteryStatus = CRITICAL;
+        }
+      } else {
+        printOledMessage("Invalid message");
       }
     }
   } // End of incoming message processing
@@ -269,9 +267,9 @@ void loop() {
   // Check for button A press
   if (!digitalRead(BUTTON_A)) {
     if (currentState == READY) {
-      sendRadioMessageNoAck("arm");
+      sendRadioMessage("arm", UPGOV_ADDR);
     } else if (currentState == ARMED) {
-      sendRadioMessageNoAck("disarm");
+      sendRadioMessage("disarm", UPGOV_ADDR);
     }
   }
   
@@ -371,6 +369,8 @@ void printOledData(oledDataType type, const char* data) {
   switch (type) {
     case STATUS:
       displayB.setCursor(42, 0);
+      displayB.print("         ");
+      displayB.setCursor(42, 0);
       displayB.print(data);
       displayB.display();
       break;
@@ -406,17 +406,23 @@ void printOledData(oledDataType type, const char* data) {
 }
 
 
-//=================== sendRadioMessageNoAck ======================
+//=================== sendRadioMessage ======================
 // Sends a radio message with no acknowledment required.
 // Parameters:
 //  message:  The radio message that is to be sent
 // Return: None
 //=================================================================
-void sendRadioMessageNoAck(const char * message) {
+bool sendRadioMessage(const char * message, uint8_t address) {
   strncpy(radioPacket, message, sizeof(radioPacket));
-  radioDriver.send((uint8_t *)radioPacket, sizeof(radioPacket));
-  delay(10);
-
-   // Block here until the packet has been sent
-   radioDriver.waitPacketSent();
+  if (radioManager.sendtoWait((uint8_t *)radioPacket, sizeof(radioPacket), address)) {
+    return true;
+  } else {
+    radioError++;
+#ifdef DEBUG
+    Serial.println("No message ack");
+    Serial.print("Radio Error #: ");
+    Serial.print(radioError);
+#endif
+    return false;
+  }
 }
