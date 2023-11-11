@@ -1,7 +1,7 @@
 // UpGoV Ground Station Application
-// Version: Beta 1.0
+// Version: Beta 1.1
 // Author: Bob Parker
-// Date: 10/13/2023
+// Date: 11/11/2023
 
 // This is an initial version of the UpGoV ground station application that does
 // not interface with an iPhone app (to be added later). This ground station app
@@ -26,18 +26,23 @@
 // Constants
 const uint8_t OLED_A_ADDR = 0x3C;
 const uint8_t OLED_B_ADDR = 0x3D;
-const uint8_t BUTTON_A = 9;
-const uint8_t BUTTON_B = 6;
-const uint8_t BUTTON_C = 5;
+const uint8_t BUTTON_PINS[] = {9, 6, 5};
+const uint8_t BUTTON_A = 0;
+const uint8_t BUTTON_B = 1;
+const uint8_t BUTTON_C = 2;
 const uint8_t RADIO_CS = 8;
 const uint8_t RADIO_INT = 3;
 const uint8_t RADIO_RST = 4;
 const double RADIO_FREQ = 915.0;
-const String VERSION = "Beta 1.0";
+const String VERSION = "Beta 1.1";
 const uint8_t RADIO_POWER = 23;
 const uint8_t MAX_MESSAGE_LENGTH = 20;
 const uint8_t GROUND_STATION_ADDR = 1;
 const uint8_t UPGOV_ADDR = 2;
+// Constants associated with switch debouncing
+const unsigned long DEBOUNCE_DELAY = 50;
+const int PRESSED = 0;
+const int NOT_PRESSED = 1;
 
 enum oledDataType {STATUS, ALTITUDE, ACCELERATION, DURATION, BATTERY1, BATTERY2};
 enum states {START_UP, FAULT, READY, ARMED, LOGGING, POST_FLIGHT, ERROR};
@@ -55,6 +60,11 @@ char buffer[MAX_MESSAGE_LENGTH]; // Message buffer
 char radioPacket[20];
 int radioError = 0;
 
+// Global Vars for button debouncing
+int buttonStates[] = {NOT_PRESSED, NOT_PRESSED, NOT_PRESSED};
+int lastButtonStates[] = {NOT_PRESSED, NOT_PRESSED, NOT_PRESSED};
+unsigned long lastDebounceTime[] = {0, 0, 0};
+
 
 void setup() {
   Serial.begin(115200);
@@ -67,7 +77,7 @@ void setup() {
   Serial.print("UpGoV Ground Station Version ");
   Serial.println(VERSION);
 
-  pinMode(BUTTON_A, INPUT_PULLUP);
+  pinMode(BUTTON_PINS[BUTTON_A], INPUT_PULLUP);
   pinMode(RADIO_RST, OUTPUT);
   digitalWrite(RADIO_RST, HIGH);
 
@@ -95,7 +105,7 @@ void setup() {
   
 
   // Wait for user to press button A
-  while(digitalRead(BUTTON_A)) {
+  while(digitalRead(BUTTON_PINS[BUTTON_A])) {
     ;
   }
 
@@ -183,7 +193,7 @@ void loop() {
   // In the loop we need to periodically do the following:
   //   1. Check for new messages received via the radio
   //   2. Update displays according to the messages received
-  //   3. Check for Button A press
+  //   3. Check for Button A press (release)
   //      If state = ready
   //      Send the "arm" radio message if button A is pressed
   //      Confirm receipt of an "armed" message from UpGoV and
@@ -264,8 +274,8 @@ void loop() {
     }
   } // End of incoming message processing
 
-  // Check for button A press
-  if (!digitalRead(BUTTON_A)) {
+  // Check if the user released button A
+  if (buttonReleased(BUTTON_A)) {
     if (currentState == READY) {
       sendRadioMessage("arm", UPGOV_ADDR);
     } else if (currentState == ARMED) {
@@ -273,7 +283,7 @@ void loop() {
     }
   }
   
-  //delay(10);  // Repeat the loop every 10ms
+  delay(10);  // Repeat the loop every 10ms
 }
 
 // ================== printOledMessage =====================
@@ -425,4 +435,40 @@ bool sendRadioMessage(const char * message, uint8_t address) {
 #endif
     return false;
   }
+}
+
+// ==================== buttonReleased =====================
+// Checks for a button release event on the specified button.
+// Includes debounce logic
+// Parameters:
+//  button - The button that is being checked
+// Return - True if a button release event is detected
+//==========================================================
+bool buttonReleased(int button) {
+  // Read the state of the button
+  int reading = digitalRead(BUTTON_PINS[button]);
+
+  // Check to see if the button was just pressed and if we
+  // have waited long enough to filter out noise (button
+  // bounce)
+  if (reading != lastButtonStates[button]) {
+    // Reset the debounce timer
+    lastDebounceTime[button] = millis();
+    lastButtonStates[button] = reading;
+  }
+
+  // See if the switch state has changed after accounting for
+  // noise/button bounce
+  if ((millis() - lastDebounceTime[button]) > DEBOUNCE_DELAY) {
+    // We have been at the current state long enough. The 
+    // button's state has really changed
+    if (reading != buttonStates[button]) {
+      buttonStates[button] = reading;
+      // Check if the new state is NOT_PRESSED
+      if (buttonStates[button] == NOT_PRESSED) {
+        return true;
+      } 
+    }
+  }
+  return false;
 }
