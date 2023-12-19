@@ -1,7 +1,7 @@
 // UpGoV Ground Station Application
-// Version: Beta 1.1
+// Version: Beta 1.2
 // Author: Bob Parker
-// Date: 11/11/2023
+// Date: 12/19/2023
 
 // This is an initial version of the UpGoV ground station application that does
 // not interface with an iPhone app (to be added later). This ground station app
@@ -21,7 +21,7 @@
 #include<RH_RF95.h>         // LoRa Radio driver library
 #include<RHReliableDatagram.h>  // Radio manager class library
 
-#define DEBUG
+//#define DEBUG
 
 // Constants
 const uint8_t OLED_A_ADDR = 0x3C;
@@ -34,7 +34,7 @@ const uint8_t RADIO_CS = 8;
 const uint8_t RADIO_INT = 3;
 const uint8_t RADIO_RST = 4;
 const double RADIO_FREQ = 915.0;
-const String VERSION = "Beta 1.1";
+const String VERSION = "Beta 1.2";
 const uint8_t RADIO_POWER = 23;
 const uint8_t MAX_MESSAGE_LENGTH = 20;
 const uint8_t GROUND_STATION_ADDR = 1;
@@ -47,6 +47,7 @@ const int NOT_PRESSED = 1;
 enum oledDataType {STATUS, ALTITUDE, ACCELERATION, DURATION, BATTERY1, BATTERY2};
 enum states {START_UP, FAULT, READY, ARMED, LOGGING, POST_FLIGHT, ERROR};
 enum battery {FULL, OK, LOWBAT, CRITICAL};
+enum yesOrNo {YES, NO, MAYBE};
 
 // Global Variables and Objects
 Adafruit_SH1107 displayA = Adafruit_SH1107(64, 128, &Wire);
@@ -59,6 +60,7 @@ bool armed = false;
 char buffer[MAX_MESSAGE_LENGTH]; // Message buffer
 char radioPacket[20];
 int radioError = 0;
+bool AT_Received = false;
 
 // Global Vars for button debouncing
 int buttonStates[] = {NOT_PRESSED, NOT_PRESSED, NOT_PRESSED};
@@ -169,7 +171,7 @@ void setup() {
       Serial.println("An ack was received");
       if (radioManager.recvfromAckTimeout((uint8_t*)buffer, &messageLength, 2000, &from)) {
         // Received a reply. Is it from the UpGoV package?
-        Serial.print("Received a reply message was received from: ");
+        Serial.print("Received a reply message from: ");
         Serial.println(from);
         if (from == UPGOV_ADDR) {
           // Its from UpGoV. Is it the connect message?
@@ -254,6 +256,7 @@ void loop() {
         printOledData(DURATION, message.c_str());
       } else if (message.startsWith("AT:")) {
         printOledMessage("Lauch again?");
+        AT_Received = true;
       } else if (message.startsWith("BT:")) {
         message.remove(0, 3);
         printOledData(BATTERY1, message.c_str());
@@ -282,7 +285,15 @@ void loop() {
       sendRadioMessage("disarm", UPGOV_ADDR);
     }
   }
-  
+
+  if (AT_Received == true) {
+    yesOrNo answer = getYesOrNo();
+    if (answer == YES) {
+      sendRadioMessage("again", UPGOV_ADDR);
+    } else if (answer == NO) {
+      sendRadioMessage("no", UPGOV_ADDR);
+    }
+  }
   delay(10);  // Repeat the loop every 10ms
 }
 
@@ -416,12 +427,13 @@ void printOledData(oledDataType type, const char* data) {
 }
 
 
-//=================== sendRadioMessage ======================
+//=================== sendRadioMessage ===============================
 // Sends a radio message with no acknowledment required.
 // Parameters:
 //  message:  The radio message that is to be sent
-// Return: None
-//=================================================================
+//  address:  The address of the receiver
+// Return: True is message sent correctly. False if there is an error
+//====================================================================
 bool sendRadioMessage(const char * message, uint8_t address) {
   strncpy(radioPacket, message, sizeof(radioPacket));
   if (radioManager.sendtoWait((uint8_t *)radioPacket, sizeof(radioPacket), address)) {
@@ -471,4 +483,21 @@ bool buttonReleased(int button) {
     }
   }
   return false;
+}
+
+// ==================== getYesOrNo =====================
+// Checks for button B or button C release.
+// Parameters:
+//  None
+// Return - Yes if button B is preleased. No if button C is
+//          released. Returns MAYBE if no button was released.
+//==========================================================
+yesOrNo getYesOrNo() {
+  if (buttonReleased(BUTTON_B)) {
+    return YES;
+  } else if (buttonReleased(BUTTON_C)) {
+    return NO;
+  } else {
+    return MAYBE;
+  }
 }
