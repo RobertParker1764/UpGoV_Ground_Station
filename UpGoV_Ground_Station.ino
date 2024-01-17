@@ -1,7 +1,7 @@
-// UpGoV Ground Station Application
-// Version: Beta 1.2
+               // UpGoV Ground Station Application
+// Version: Beta 1.3
 // Author: Bob Parker
-// Date: 12/19/2023
+// Date: 1/17/2024
 
 // This is an initial version of the UpGoV ground station application that does
 // not interface with an iPhone app (to be added later). This ground station app
@@ -34,7 +34,7 @@ const uint8_t RADIO_CS = 8;
 const uint8_t RADIO_INT = 3;
 const uint8_t RADIO_RST = 4;
 const double RADIO_FREQ = 915.0;
-const String VERSION = "Beta 1.2";
+const String VERSION = "Beta 1.3";
 const uint8_t RADIO_POWER = 23;
 const uint8_t MAX_MESSAGE_LENGTH = 20;
 const uint8_t GROUND_STATION_ADDR = 1;
@@ -60,7 +60,7 @@ bool armed = false;
 char buffer[MAX_MESSAGE_LENGTH]; // Message buffer
 char radioPacket[20];
 int radioError = 0;
-bool AT_Received = false;
+bool AT_Recieved = false;
 
 // Global Vars for button debouncing
 int buttonStates[] = {NOT_PRESSED, NOT_PRESSED, NOT_PRESSED};
@@ -171,7 +171,7 @@ void setup() {
       Serial.println("An ack was received");
       if (radioManager.recvfromAckTimeout((uint8_t*)buffer, &messageLength, 2000, &from)) {
         // Received a reply. Is it from the UpGoV package?
-        Serial.print("Received a reply message from: ");
+        Serial.print("Received a reply message was received from: ");
         Serial.println(from);
         if (from == UPGOV_ADDR) {
           // Its from UpGoV. Is it the connect message?
@@ -256,8 +256,8 @@ void loop() {
         printOledData(DURATION, message.c_str());
       } else if (message.startsWith("AT:")) {
         printOledMessage("Lauch again?");
-        AT_Received = true;
-      } else if (message.startsWith("BT:")) {
+        AT_Recieved = true;
+      } else if (message.startsWith("B1:")) {
         message.remove(0, 3);
         printOledData(BATTERY1, message.c_str());
         if (message == "FULL") {
@@ -266,7 +266,21 @@ void loop() {
           currentBatteryStatus = OK;
         } else if (message == "LOW") {
           currentBatteryStatus = LOWBAT;
-        } else if (message == "CRITICAL") {
+        } else if (message == "POOR") {
+          currentBatteryStatus = CRITICAL;
+        } else {
+          currentBatteryStatus = CRITICAL;
+        }
+      } else if (message.startsWith("B2:")) { //Battery 2---------
+        message.remove(0, 3);
+        printOledData(BATTERY2, message.c_str());
+        if (message == "FULL") {
+          currentBatteryStatus = FULL;
+        } else if (message == "OK") {
+          currentBatteryStatus = OK;
+        } else if (message == "LOW") {
+          currentBatteryStatus = LOWBAT;
+        } else if (message == "POOR") {
           currentBatteryStatus = CRITICAL;
         } else {
           currentBatteryStatus = CRITICAL;
@@ -286,14 +300,14 @@ void loop() {
     }
   }
 
-  if (AT_Received == true) {
-    yesOrNo answer = getYesOrNo();
-    if (answer == YES) {
-      sendRadioMessage("again", UPGOV_ADDR);
-    } else if (answer == NO) {
-      sendRadioMessage("no", UPGOV_ADDR);
-    }
+if (AT_Recieved == true) {
+  yesOrNo answer = getYesOrNo();
+  if (answer == YES) {
+    sendRadioMessage("again", UPGOV_ADDR);
+  } else if (answer == NO){
+    sendRadioMessage("no", UPGOV_ADDR);
   }
+}
   delay(10);  // Repeat the loop every 10ms
 }
 
@@ -412,10 +426,14 @@ void printOledData(oledDataType type, const char* data) {
       break;
     case BATTERY1:
       displayB.setCursor(36, 50);
+      displayB.print("    ");
+      displayB.setCursor(36, 50);
       displayB.print(data);
       displayB.display();
       break;
     case BATTERY2:
+      displayB.setCursor(100, 50);
+      displayB.print("    ");
       displayB.setCursor(100, 50);
       displayB.print(data);
       displayB.display();
@@ -427,13 +445,14 @@ void printOledData(oledDataType type, const char* data) {
 }
 
 
-//=================== sendRadioMessage ===============================
+//=================== sendRadioMessage ======================
 // Sends a radio message with no acknowledment required.
 // Parameters:
 //  message:  The radio message that is to be sent
-//  address:  The address of the receiver
-// Return: True is message sent correctly. False if there is an error
-//====================================================================
+//  adress: the place we're sending the message
+// Return: True if it is sent correctly
+// Return False if there is an error
+//=================================================================
 bool sendRadioMessage(const char * message, uint8_t address) {
   strncpy(radioPacket, message, sizeof(radioPacket));
   if (radioManager.sendtoWait((uint8_t *)radioPacket, sizeof(radioPacket), address)) {
@@ -486,18 +505,15 @@ bool buttonReleased(int button) {
 }
 
 // ==================== getYesOrNo =====================
-// Checks for button B or button C release.
-// Parameters:
-//  None
-// Return - Yes if button B is preleased. No if button C is
-//          released. Returns MAYBE if no button was released.
+// Checks for button b or button c release
+// Return - Yes (Button B) or No (Button C) or Maybe (No Activity)
 //==========================================================
 yesOrNo getYesOrNo() {
   if (buttonReleased(BUTTON_B)) {
     return YES;
   } else if (buttonReleased(BUTTON_C)) {
     return NO;
-  } else {
+  } else{
     return MAYBE;
   }
 }
